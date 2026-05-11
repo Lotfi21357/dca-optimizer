@@ -6,227 +6,89 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings("ignore")
 
-# ---------- PAGE CONFIG ----------
 st.set_page_config(page_title="DCA Optimizer", page_icon="🎯", layout="wide")
 
 st.markdown("""
 <style>
-    body {font-family: 'Inter', sans-serif; background-color: #f8f9fa;}
-    .stApp {background-color: #f8f9fa;}
-    .big-price {font-size: 2.8rem; font-weight: 800; color: #0d6efd; text-align: center;}
-    .decision-banner {font-size: 1.6rem; font-weight: bold; text-align: center; padding: 0.8rem; border-radius: 1rem; margin: 1rem 0;}
-    .warning-box {background-color: #fff3cd; border-left: 5px solid #ffc107; padding: 0.8rem; border-radius: 0.5rem; margin: 0.5rem 0;}
-    .metric-card {background: white; border-radius: 1rem; padding: 1rem; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 0.5rem;}
-    .sidebar .stNumberInput label {font-size: 0.9rem; font-weight: 600;}
+.big-price {font-size: 2.5rem; font-weight: bold; color: #0d6efd; text-align: center;}
+.decision-banner {font-size: 1.4rem; font-weight: bold; text-align: center; padding: 0.5rem; border-radius: 0.5rem; margin: 0.5rem 0;}
+.warning-box {background-color: #fff3cd; border-left: 5px solid #ffc107; padding: 0.5rem; margin: 0.5rem 0;}
 </style>
 """, unsafe_allow_html=True)
 
 # ---------- SIDEBAR ----------
-st.sidebar.header("⚙️ Paramètres")
-parts = st.sidebar.number_input("Parts actuelles", value=481, step=1)
-prm_actuel = st.sidebar.number_input("PRM actuel (€)", value=5.261, step=0.001, format="%.4f")
-bonus = st.sidebar.number_input("Bonus injecté (€)", value=160.0, step=10.0)
-prm_ajuste = ((parts * prm_actuel) - bonus) / parts
-st.sidebar.metric("PRM ajusté", f"{prm_ajuste:.4f} €", delta=f"Bonus -{bonus:.0f}€")
+st.sidebar.header("Paramètres")
+parts = st.sidebar.number_input("Parts", value=481, step=1)
+prm = st.sidebar.number_input("PRM (€)", value=5.261, step=0.001, format="%.4f")
+bonus = st.sidebar.number_input("Bonus (€)", value=160.0, step=10.0)
+prm_ajuste = ((parts * prm) - bonus) / parts
+st.sidebar.metric("PRM ajusté", f"{prm_ajuste:.4f}€")
 
-montant = st.sidebar.number_input("Montant à investir (€)", value=500.0, step=100.0)
-if st.sidebar.button("🔄 Rafraîchir les données"):
+montant = st.sidebar.number_input("Investir (€)", value=500.0, step=100.0)
+if st.sidebar.button("Rafraîchir"):
     st.cache_data.clear()
     st.rerun()
 
-st.sidebar.caption("Données mises en cache 2 min.")
-
-# ---------- TÉLÉCHARGEMENT ROBUSTE ----------
+# ---------- DONNÉES (robustes, minuscules forcées) ----------
 @st.cache_data(ttl=120, show_spinner="Chargement...")
-def fetch(ticker, period="3mo", interval="1d"):
-    for _ in range(3):
+def get_data(ticker, period="3mo"):
+    for _ in range(2):
         try:
-            df = yf.download(ticker, period=period, interval=interval, progress=False)
+            df = yf.download(ticker, period=period, progress=False)
             if not df.empty:
-                return df
-        except:
-            pass
-        try:
-            t = yf.Ticker(ticker)
-            df = t.history(period=period, interval=interval)
-            if not df.empty:
+                df.columns = [c.lower().strip() for c in df.columns]
                 return df
         except:
             pass
     return pd.DataFrame()
 
-def normalize_columns(df):
-    """Passe tous les noms de colonnes en minuscules pour éviter les erreurs de casse."""
-    df.columns = [c.lower() for c in df.columns]
-    return df
-
-# ---------- DONNÉES ----------
-daily = normalize_columns(fetch("DCAM.PA", "3mo"))
+daily = get_data("DCAM.PA")
 if daily.empty:
-    st.error("❌ Données DCAM.PA temporairement indisponibles. Utilisez le bouton de rafraîchissement.")
+    st.error("Données DCAM.PA indisponibles. Veuillez réessayer plus tard.")
     st.stop()
-daily.ffill(inplace=True)
 
-current = daily['close'].iat[-1]
-open_p = daily['open'].iat[-1] if 'open' in daily.columns else None
-prev_c = daily['close'].iat[-2] if len(daily) > 1 else None
+# Dernières valeurs (minuscules)
+close = daily['close'].iloc[-1]
+high20 = daily['high'].rolling(20).max().iloc[-1]
+drawdown = (close / high20 - 1) * 100
 
-now = datetime.now()
-market_open = 9 <= now.hour < 17 or (now.hour == 17 and now.minute <= 30)
+# RSI simple
+delta = daily['close'].diff()
+gain = delta.clip(lower=0).rolling(14).mean()
+loss = (-delta.clip(upper=0)).rolling(14).mean()
+rs = gain / loss
+rsi_val = 100 - (100 / (1 + rs)).iloc[-1]
 
-intraday = pd.DataFrame()
-if market_open:
-    intraday = normalize_columns(fetch("DCAM.PA", "1d", "5m"))
-    if not intraday.empty:
-        intraday.ffill(inplace=True)
-
-# ---------- INDICATEURS ----------
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period, min_periods=period).mean()
-    avg_loss = loss.rolling(period, min_periods=period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    last = rsi.dropna()
-    return float(last.iat[-1]) if not last.empty else None
-
-def atr(df, period=14):
-    high, low, close = df['high'], df['low'], df['close']
-    tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
-    atr = tr.rolling(period).mean()
-    last = atr.dropna()
-    return float(last.iat[-1]) if not last.empty else None
-
-def vwap(df):
-    typical = (df['high'] + df['low'] + df['close']) / 3
-    v = (typical * df['volume']).cumsum() / df['volume'].cumsum()
-    return float(v.iat[-1]) if not v.empty else None
-
-def bb(series, window=20, std=2):
-    sma = series.rolling(window).mean()
-    stdv = series.rolling(window).std()
-    lower = sma - stdv * std
-    upper = sma + stdv * std
-    l = lower.dropna()
-    u = upper.dropna()
-    return (float(l.iat[-1]) if not l.empty else None, float(u.iat[-1]) if not u.empty else None)
-
-rsi_val = rsi(daily['close'], 14)
-high20 = daily['high'].rolling(20).max().iat[-1]
-drawdown = (current - high20) / high20 * 100
-atr_val = atr(daily, 14)
-vol_pct = (atr_val / current * 100) if atr_val else 0.0
-
+# Score
 score = 5
-if rsi_val is not None:
-    if rsi_val < 30: score += 4
-    elif rsi_val < 45: score += 2
-    elif rsi_val > 70: score -= 3
+if rsi_val < 30: score += 4
+elif rsi_val < 45: score += 2
+elif rsi_val > 70: score -= 3
 if drawdown < -2: score += 3
 elif drawdown < -1.5: score += 2
-elif drawdown < -1: score += 1
-if vol_pct > 2.0: score -= 2
 score = max(0, min(10, score))
 
-# Sentinelles US
-es = normalize_columns(fetch("ES=F", "1d", "5m"))
-nq = normalize_columns(fetch("NQ=F", "1d", "5m"))
-es_var = nq_var = 0.0
-if not es.empty and not nq.empty and len(es) > 1 and len(nq) > 1:
-    es_var = (es['close'].iat[-1] / es['close'].iat[-2] - 1) * 100
-    nq_var = (nq['close'].iat[-1] / nq['close'].iat[-2] - 1) * 100
-us_alert = (14 <= now.hour < 16 or (now.hour == 16 and now.minute == 0)) and (es_var < -0.8 or nq_var < -0.8)
+decision = "ACHAT" if score >= 7 else "ATTENDRE" if score >= 4 else "PRUDENCE"
+colors = {"ACHAT": "green", "ATTENDRE": "orange", "PRUDENCE": "red"}
 
-# Gap
-gap_alert = False
-if open_p and prev_c:
-    gap_alert = abs(open_p / prev_c - 1) * 100 > 0.5
+# ---------- AFFICHAGE ----------
+st.title("🎯 DCA Optimizer DCAM")
+st.markdown(f"<div class='decision-banner' style='background-color:{colors[decision]};color:white;'>{decision}</div>", unsafe_allow_html=True)
 
-# VWAP et prix limite
-vwap_val = None
-boll_low = boll_up = None
-if not intraday.empty:
-    vwap_val = vwap(intraday)
-    boll_low, boll_up = bb(intraday['close'], 20, 2) if len(intraday) >= 20 else (None, None)
+col1, col2 = st.columns(2)
+col1.metric("Dernier cours", f"{close:.4f}€")
+col2.metric("Score du jour", f"{score}/10")
+st.progress(score/10)
+st.write(f"RSI : {rsi_val:.1f} | Drawdown 20j : {drawdown:.2f}%")
 
-price_lim = vwap_val * 0.9995 if vwap_val else current * 0.999
+gain = close - prm_ajuste
+st.metric("Gain latent", f"{gain:+.4f}€", delta=f"{(gain/prm_ajuste*100):+.2f}%")
 
-# Calculateur
-if montant > 0 and price_lim > 0:
-    nb_parts_frac = montant / price_lim
-    nb_parts = int(nb_parts_frac)
-    cout = nb_parts * price_lim
-    new_prm = (parts * prm_ajuste + cout) / (parts + nb_parts) if nb_parts else prm_ajuste
-else:
-    nb_parts = cout = 0
-    new_prm = prm_ajuste
+# Prix limite simple
+price_limit = close * 0.999
+if montant > 0:
+    nb = int(montant // price_limit)
+    cout = nb * price_limit
+    st.write(f"Prix limite suggéré : **{price_limit:.4f}€** → {nb} parts pour {cout:.2f}€")
 
-# Décision
-if us_alert:
-    decision, color = "PRUDENCE MACRO", "red"
-elif score >= 7:
-    decision, color = "ACHAT FAVORABLE", "green"
-elif score >= 4:
-    decision, color = "ATTENDRE", "orange"
-else:
-    decision, color = "PRUDENCE MACRO", "red"
-
-# ---------- INTERFACE ----------
-st.title("🎯 DCAM DCA Optimizer")
-st.caption(f"Analyse du {now.strftime('%d/%m/%Y à %H:%M')}")
-
-st.markdown(f"<div class='decision-banner' style='background-color:{color};color:white;'>{decision}</div>", unsafe_allow_html=True)
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-    st.metric("Dernier cours", f"{current:.4f}€")
-    st.metric("Ouverture", f"{open_p:.4f}€" if open_p else "N/A")
-    st.metric("Clôture veille", f"{prev_c:.4f}€" if prev_c else "N/A")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with col2:
-    st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-    st.metric("Score du jour", f"{score}/10")
-    st.progress(score/10)
-    st.write(f"RSI(14) : {rsi_val:.1f}" if rsi_val is not None else "RSI N/A")
-    st.write(f"Drawdown 20j : {drawdown:.2f}%")
-    st.write(f"Volatilité (ATR) : {vol_pct:.2f}%")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with col3:
-    st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-    gain_lat = current - prm_ajuste
-    gain_pct_lat = (gain_lat / prm_ajuste * 100)
-    st.metric("PRM ajusté", f"{prm_ajuste:.4f}€")
-    st.metric("Gain latent", f"{gain_lat:+.4f}€", delta=f"{gain_pct_lat:+.2f}%")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-if us_alert:
-    st.warning("⚠️ Volatilité US détectée (Futures < -0.8% entre 14h30-16h00). Attendez 15h45.")
-if gap_alert:
-    st.warning("⚠️ Gap d'ouverture > 0.5%. Attendez 10h30.")
-
-if market_open and not intraday.empty:
-    st.subheader("⚡ Exécution Intraday")
-    c4,c5,c6 = st.columns(3)
-    c4.metric("VWAP", f"{vwap_val:.4f}€" if vwap_val else "N/A")
-    if boll_low: c4.metric("Boll. inf.", f"{boll_low:.4f}€")
-    if boll_up: c6.metric("Boll. sup.", f"{boll_up:.4f}€")
-    c5.markdown(f"<div class='big-price'>{price_lim:.4f}€</div>", unsafe_allow_html=True)
-    c5.caption("Prix limite idéal (VWAP -0.05%)")
-elif market_open:
-    st.info("Données intraday en attente... Réessayez dans quelques minutes.")
-else:
-    st.info("Marché fermé (9h-17h30 Paris).")
-
-st.subheader("🧮 Calculateur de parts")
-ca,cb,cc = st.columns(3)
-ca.metric("Parts", f"{nb_parts}")
-cb.metric("Coût total", f"{cout:.2f}€")
-cc.metric("Nouveau PRM", f"{new_prm:.4f}€")
-
-st.markdown("<div class='warning-box'>⚠️ Yahoo Finance peut avoir 15 min de retard. Vérifiez le cours sur votre courtier.</div>", unsafe_allow_html=True)
-st.caption("DCA Optimizer · Outil personnel d'aide à la décision")
+st.markdown("<div class='warning-box'>⚠️ Yahoo Finance : décalage possible de 15 min.</div>", unsafe_allow_html=True)
