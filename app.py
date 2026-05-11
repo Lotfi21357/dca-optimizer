@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings("ignore")
 
-# ---------- CONFIGURATION ----------
+# ---------- PAGE CONFIG ----------
 st.set_page_config(page_title="DCA Optimizer", page_icon="🎯", layout="wide")
 
 st.markdown("""
@@ -34,91 +34,88 @@ if st.sidebar.button("🔄 Rafraîchir les données"):
     st.cache_data.clear()
     st.rerun()
 
-st.sidebar.caption("Données actualisées en cache pendant 2 min.")
+st.sidebar.caption("Données mises en cache 2 min.")
 
-# ---------- FONCTIONS DE TÉLÉCHARGEMENT ROBUSTE ----------
+# ---------- TÉLÉCHARGEMENT ROBUSTE ----------
 @st.cache_data(ttl=120, show_spinner="Chargement...")
-def fetch_data(ticker, period="3mo", interval="1d"):
-    """Essaie plusieurs méthodes pour obtenir les données."""
-    # Méthode 1 : download standard
-    try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
-        if not df.empty:
-            return df
-    except:
-        pass
-    # Méthode 2 : utiliser l'objet Ticker
-    try:
-        t = yf.Ticker(ticker)
-        df = t.history(period=period, interval=interval)
-        if not df.empty:
-            return df
-    except:
-        pass
-    # Méthode 3 : période exacte avec dates
-    try:
-        end = datetime.now()
-        start = end - timedelta(days=100)
-        df = yf.download(ticker, start=start, end=end, interval=interval, progress=False)
-        if not df.empty:
-            return df
-    except:
-        pass
+def fetch(ticker, period="3mo", interval="1d"):
+    for attempt in range(3):
+        try:
+            df = yf.download(ticker, period=period, interval=interval, progress=False)
+            if not df.empty:
+                return df
+        except:
+            pass
+        try:
+            t = yf.Ticker(ticker)
+            df = t.history(period=period, interval=interval)
+            if not df.empty:
+                return df
+        except:
+            pass
     return pd.DataFrame()
 
-# ---------- CHARGEMENT ----------
-daily = fetch_data("DCAM.PA", "3mo")
+# ---------- DONNÉES ----------
+daily = fetch("DCAM.PA", "3mo")
 if daily.empty:
-    st.error("❌ Données DCAM.PA temporairement indisponibles (Yahoo Finance).")
-    st.info("💡 Appuyez sur **🔄 Rafraîchir les données** dans la barre latérale pour réessayer.")
+    st.error("❌ Données DCAM.PA temporairement indisponibles. Utilisez le bouton de rafraîchissement.")
     st.stop()
-
 daily.ffill(inplace=True)
-current = daily['Close'].iloc[-1]
-open_p = daily['Open'].iloc[-1] if 'Open' in daily.columns else None
-prev_c = daily['Close'].iloc[-2] if len(daily) > 1 else None
 
-# Intraday (5 min) si marché ouvert
+current = daily['Close'].iat[-1]
+open_p = daily['Open'].iat[-1] if 'Open' in daily.columns else None
+prev_c = daily['Close'].iat[-2] if len(daily) > 1 else None
+
 now = datetime.now()
 market_open = 9 <= now.hour < 17 or (now.hour == 17 and now.minute <= 30)
+
 intraday = pd.DataFrame()
 if market_open:
-    intraday = fetch_data("DCAM.PA", "1d", "5m")
+    intraday = fetch("DCAM.PA", "1d", "5m")
     if not intraday.empty:
         intraday.ffill(inplace=True)
 
-# ---------- INDICATEURS MANUELS ----------
+# ---------- INDICATEURS (retournent float ou None) ----------
 def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
+    avg_gain = gain.rolling(period, min_periods=period).mean()
+    avg_loss = loss.rolling(period, min_periods=period).mean()
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    last = rsi.dropna()
+    return float(last.iat[-1]) if not last.empty else None
 
 def atr(df, period=14):
     high, low, close = df['High'], df['Low'], df['Close']
     tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
+    atr = tr.rolling(period).mean()
+    last = atr.dropna()
+    return float(last.iat[-1]) if not last.empty else None
 
 def vwap(df):
     typical = (df['High'] + df['Low'] + df['Close']) / 3
-    return (typical * df['Volume']).cumsum() / df['Volume'].cumsum()
+    v = (typical * df['Volume']).cumsum() / df['Volume'].cumsum()
+    return float(v.iat[-1]) if not v.empty else None
 
 def bb(series, window=20, std=2):
     sma = series.rolling(window).mean()
     stdv = series.rolling(window).std()
-    return sma.iloc[-1] - stdv.iloc[-1]*std, sma.iloc[-1], sma.iloc[-1] + stdv.iloc[-1]*std
+    lower = sma - stdv * std
+    upper = sma + stdv * std
+    l = lower.dropna()
+    u = upper.dropna()
+    return (float(l.iat[-1]) if not l.empty else None, float(u.iat[-1]) if not u.empty else None)
 
-rsi_val = rsi(daily['Close'], 14).iloc[-1] if len(daily) > 14 else None
-high20 = daily['High'].rolling(20).max().iloc[-1]
+rsi_val = rsi(daily['Close'], 14)
+high20 = daily['High'].rolling(20).max().iat[-1]
 drawdown = (current - high20) / high20 * 100
-atr_val = atr(daily, 14).iloc[-1] if len(daily) > 14 else None
-vol_pct = (atr_val / current * 100) if atr_val else 0
+atr_val = atr(daily, 14)
+vol_pct = (atr_val / current * 100) if atr_val else 0.0
 
 score = 5
-if rsi_val:
+if rsi_val is not None:
     if rsi_val < 30: score += 4
     elif rsi_val < 45: score += 2
     elif rsi_val > 70: score -= 3
@@ -129,14 +126,13 @@ if vol_pct > 2.0: score -= 2
 score = max(0, min(10, score))
 
 # Sentinelles US
-es = fetch_data("ES=F", "1d", "5m")
-nq = fetch_data("NQ=F", "1d", "5m")
+es = fetch("ES=F", "1d", "5m")
+nq = fetch("NQ=F", "1d", "5m")
 es_var = nq_var = 0.0
-if not es.empty and not nq.empty:
-    es_var = (es['Close'].iloc[-1] / es['Close'].iloc[-2] - 1) * 100 if len(es)>1 else 0
-    nq_var = (nq['Close'].iloc[-1] / nq['Close'].iloc[-2] - 1) * 100 if len(nq)>1 else 0
-
-us_alert = (14 <= now.hour < 16 or (now.hour==16 and now.minute==0)) and (es_var < -0.8 or nq_var < -0.8)
+if not es.empty and not nq.empty and len(es) > 1 and len(nq) > 1:
+    es_var = (es['Close'].iat[-1] / es['Close'].iat[-2] - 1) * 100
+    nq_var = (nq['Close'].iat[-1] / nq['Close'].iat[-2] - 1) * 100
+us_alert = (14 <= now.hour < 16 or (now.hour == 16 and now.minute == 0)) and (es_var < -0.8 or nq_var < -0.8)
 
 # Gap
 gap_alert = False
@@ -147,9 +143,8 @@ if open_p and prev_c:
 vwap_val = None
 boll_low = boll_up = None
 if not intraday.empty:
-    vwap_val = vwap(intraday).iloc[-1]
-    if len(intraday) >= 20:
-        boll_low, _, boll_up = bb(intraday['Close'], 20, 2)
+    vwap_val = vwap(intraday)
+    boll_low, boll_up = bb(intraday['Close'], 20, 2) if len(intraday) >= 20 else (None, None)
 
 price_lim = vwap_val * 0.9995 if vwap_val else current * 0.999
 
@@ -191,7 +186,7 @@ with col2:
     st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
     st.metric("Score du jour", f"{score}/10")
     st.progress(score/10)
-    st.write(f"RSI(14) : {rsi_val:.1f}" if rsi_val else "RSI N/A")
+    st.write(f"RSI(14) : {rsi_val:.1f}" if rsi_val is not None else "RSI N/A")
     st.write(f"Drawdown 20j : {drawdown:.2f}%")
     st.write(f"Volatilité (ATR) : {vol_pct:.2f}%")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -212,7 +207,7 @@ if gap_alert:
 if market_open and not intraday.empty:
     st.subheader("⚡ Exécution Intraday")
     c4,c5,c6 = st.columns(3)
-    c4.metric("VWAP", f"{vwap_val:.4f}€")
+    c4.metric("VWAP", f"{vwap_val:.4f}€" if vwap_val else "N/A")
     if boll_low: c4.metric("Boll. inf.", f"{boll_low:.4f}€")
     if boll_up: c6.metric("Boll. sup.", f"{boll_up:.4f}€")
     c5.markdown(f"<div class='big-price'>{price_lim:.4f}€</div>", unsafe_allow_html=True)
