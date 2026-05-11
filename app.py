@@ -62,6 +62,7 @@ if daily.empty:
     st.stop()
 daily.ffill(inplace=True)
 
+# Utiliser MAJUSCULES pour les colonnes : 'Close', 'Open', 'High', 'Low', 'Volume'
 current = daily['Close'].iat[-1]
 open_p = daily['Open'].iat[-1] if 'Open' in daily.columns else None
 prev_c = daily['Close'].iat[-2] if len(daily) > 1 else None
