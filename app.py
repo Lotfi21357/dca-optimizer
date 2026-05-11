@@ -109,7 +109,7 @@ elif rsi_val and rsi_val > 70:
 else:
     conseil = "ℹ️ Conditions neutres, vous pouvez investir sans urgence"
 
-# ---------- INTRAJOUR (correction fuseau horaire Paris) ----------
+# ---------- INTRAJOUR ----------
 tz_paris = ZoneInfo("Europe/Paris")
 now = datetime.now(tz_paris)
 market_open = (now.hour >= 9 and now.hour < 17) or (now.hour == 17 and now.minute <= 30)
@@ -118,7 +118,11 @@ if market_open:
     intraday = load_intraday_data()
     if intraday is not None and not intraday.empty:
         vwap = compute_vwap(intraday)
-        boll_lower, _, boll_upper = compute_bollinger(intraday['Close'], 20, 2)
+        # Choisir une fenêtre adaptée aux données disponibles
+        n_points = len(intraday)
+        window = 20 if n_points >= 20 else (10 if n_points >= 10 else n_points)
+        if window >= 2:
+            boll_lower, _, boll_upper = compute_bollinger(intraday['Close'], window, 2)
         price_limit = vwap * 0.9995 if vwap else current_price * 0.999
 
 # ---------- INTERFACE ----------
@@ -166,9 +170,14 @@ if market_open:
         st.success("Marché ouvert – données intraday disponibles")
         c7,c8,c9 = st.columns(3)
         c7.metric("VWAP", f"{vwap:.4f} €" if vwap else "N/A")
-        if boll_lower and boll_upper:
+        if boll_lower is not None and not np.isnan(boll_lower):
             c8.metric("Boll. inf.", f"{boll_lower:.4f} €")
+        else:
+            c8.metric("Boll. inf.", "N/A")
+        if boll_upper is not None and not np.isnan(boll_upper):
             c9.metric("Boll. sup.", f"{boll_upper:.4f} €")
+        else:
+            c9.metric("Boll. sup.", "N/A")
         if price_limit:
             st.markdown(f"**Prix limite idéal : `{price_limit:.4f} €`** (VWAP -0.05%)")
     else:
