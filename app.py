@@ -39,7 +39,7 @@ st.sidebar.caption("Données mises en cache 2 min.")
 # ---------- TÉLÉCHARGEMENT ROBUSTE ----------
 @st.cache_data(ttl=120, show_spinner="Chargement...")
 def fetch(ticker, period="3mo", interval="1d"):
-    for attempt in range(3):
+    for _ in range(3):
         try:
             df = yf.download(ticker, period=period, interval=interval, progress=False)
             if not df.empty:
@@ -55,28 +55,32 @@ def fetch(ticker, period="3mo", interval="1d"):
             pass
     return pd.DataFrame()
 
+def normalize_columns(df):
+    """Passe tous les noms de colonnes en minuscules pour éviter les erreurs de casse."""
+    df.columns = [c.lower() for c in df.columns]
+    return df
+
 # ---------- DONNÉES ----------
-daily = fetch("DCAM.PA", "3mo")
+daily = normalize_columns(fetch("DCAM.PA", "3mo"))
 if daily.empty:
     st.error("❌ Données DCAM.PA temporairement indisponibles. Utilisez le bouton de rafraîchissement.")
     st.stop()
 daily.ffill(inplace=True)
 
-# Utiliser MAJUSCULES pour les colonnes : 'Close', 'Open', 'High', 'Low', 'Volume'
-current = daily['Close'].iat[-1]
-open_p = daily['Open'].iat[-1] if 'Open' in daily.columns else None
-prev_c = daily['Close'].iat[-2] if len(daily) > 1 else None
+current = daily['close'].iat[-1]
+open_p = daily['open'].iat[-1] if 'open' in daily.columns else None
+prev_c = daily['close'].iat[-2] if len(daily) > 1 else None
 
 now = datetime.now()
 market_open = 9 <= now.hour < 17 or (now.hour == 17 and now.minute <= 30)
 
 intraday = pd.DataFrame()
 if market_open:
-    intraday = fetch("DCAM.PA", "1d", "5m")
+    intraday = normalize_columns(fetch("DCAM.PA", "1d", "5m"))
     if not intraday.empty:
         intraday.ffill(inplace=True)
 
-# ---------- INDICATEURS (retournent float ou None) ----------
+# ---------- INDICATEURS ----------
 def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -89,15 +93,15 @@ def rsi(series, period=14):
     return float(last.iat[-1]) if not last.empty else None
 
 def atr(df, period=14):
-    high, low, close = df['High'], df['Low'], df['Close']
+    high, low, close = df['high'], df['low'], df['close']
     tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
     atr = tr.rolling(period).mean()
     last = atr.dropna()
     return float(last.iat[-1]) if not last.empty else None
 
 def vwap(df):
-    typical = (df['High'] + df['Low'] + df['Close']) / 3
-    v = (typical * df['Volume']).cumsum() / df['Volume'].cumsum()
+    typical = (df['high'] + df['low'] + df['close']) / 3
+    v = (typical * df['volume']).cumsum() / df['volume'].cumsum()
     return float(v.iat[-1]) if not v.empty else None
 
 def bb(series, window=20, std=2):
@@ -109,8 +113,8 @@ def bb(series, window=20, std=2):
     u = upper.dropna()
     return (float(l.iat[-1]) if not l.empty else None, float(u.iat[-1]) if not u.empty else None)
 
-rsi_val = rsi(daily['Close'], 14)
-high20 = daily['High'].rolling(20).max().iat[-1]
+rsi_val = rsi(daily['close'], 14)
+high20 = daily['high'].rolling(20).max().iat[-1]
 drawdown = (current - high20) / high20 * 100
 atr_val = atr(daily, 14)
 vol_pct = (atr_val / current * 100) if atr_val else 0.0
@@ -127,12 +131,12 @@ if vol_pct > 2.0: score -= 2
 score = max(0, min(10, score))
 
 # Sentinelles US
-es = fetch("ES=F", "1d", "5m")
-nq = fetch("NQ=F", "1d", "5m")
+es = normalize_columns(fetch("ES=F", "1d", "5m"))
+nq = normalize_columns(fetch("NQ=F", "1d", "5m"))
 es_var = nq_var = 0.0
 if not es.empty and not nq.empty and len(es) > 1 and len(nq) > 1:
-    es_var = (es['Close'].iat[-1] / es['Close'].iat[-2] - 1) * 100
-    nq_var = (nq['Close'].iat[-1] / nq['Close'].iat[-2] - 1) * 100
+    es_var = (es['close'].iat[-1] / es['close'].iat[-2] - 1) * 100
+    nq_var = (nq['close'].iat[-1] / nq['close'].iat[-2] - 1) * 100
 us_alert = (14 <= now.hour < 16 or (now.hour == 16 and now.minute == 0)) and (es_var < -0.8 or nq_var < -0.8)
 
 # Gap
@@ -145,7 +149,7 @@ vwap_val = None
 boll_low = boll_up = None
 if not intraday.empty:
     vwap_val = vwap(intraday)
-    boll_low, boll_up = bb(intraday['Close'], 20, 2) if len(intraday) >= 20 else (None, None)
+    boll_low, boll_up = bb(intraday['close'], 20, 2) if len(intraday) >= 20 else (None, None)
 
 price_lim = vwap_val * 0.9995 if vwap_val else current * 0.999
 
