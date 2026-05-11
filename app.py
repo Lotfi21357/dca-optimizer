@@ -5,12 +5,21 @@ import pandas as pd
 import numpy as np
 import pandas_ta as ta
 from datetime import datetime, timedelta
-from streamlit_autorefresh import st_autorefresh
 import warnings
 warnings.filterwarnings("ignore")
 
-# ---------- AUTO-REFRESH (toutes les 2 minutes) ----------
-st_autorefresh(interval=120_000, key="autorefresh")
+# ---------- AUTO-REFRESH NATIF (toutes les 120 secondes) ----------
+# Utilisation d'un script JS intégré qui recharge la page après 120 000 ms
+st.markdown(
+    """
+    <script>
+    setTimeout(function(){
+        window.location.reload(true);
+    }, 120000);
+    </script>
+    """,
+    unsafe_allow_html=True
+)
 
 # ---------- CONFIGURATION PAGE ----------
 st.set_page_config(
@@ -45,10 +54,9 @@ def load_daily_data():
         return None
     return df
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def load_intraday_data():
     """Récupère les données intraday de la journée (intervalle 5 minutes)."""
-    # Yahoo permet '5m' pour les 60 derniers jours, mais pour aujourd'hui seulement
     df = yf.download(TICKER, period="1d", interval="5m", progress=False)
     if df.empty:
         return None
@@ -61,7 +69,7 @@ def compute_vwap(df):
     return vwap.iloc[-1] if not vwap.empty else None
 
 def compute_bollinger(df, length=20, std=2):
-    """Retourne les bandes de Bollinger (lower, middle, upper) en utilisant pandas_ta."""
+    """Retourne les bandes de Bollinger (lower, middle, upper)."""
     bbands = ta.bbands(df['Close'], length=length, std=std)
     if bbands is not None:
         last = bbands.iloc[-1]
@@ -83,12 +91,9 @@ if daily_data is None:
 current_price = daily_data['Close'].iloc[-1]
 
 # Module 1 : Analyse journalière
-# RSI(14)
 rsi_val = compute_rsi(daily_data, 14)
-
-# Plus haut des 20 derniers jours et drawdown
 high_20 = daily_data['High'].rolling(20).max().iloc[-1]
-drawdown_pct = (current_price - high_20) / high_20 * 100  # négatif si en dessous
+drawdown_pct = (current_price - high_20) / high_20 * 100
 
 # Score de journée (0 à 10)
 score = 0
@@ -105,7 +110,7 @@ elif drawdown_pct < -1.5:
     score += 2
 elif drawdown_pct < -1:
     score += 1
-score = max(0, min(10, score + 5))  # recentrage autour de 5
+score = max(0, min(10, score + 5))
 
 # Conseil
 if rsi_val is not None and rsi_val < 45 and drawdown_pct < -1.5:
@@ -115,8 +120,7 @@ elif rsi_val is not None and rsi_val > 70:
 else:
     conseil = "ℹ️ Conditions neutres, vous pouvez investir sans urgence"
 
-# Module 2 : Intraday (si marché ouvert)
-# Heure de Paris (approximative, on considère ouverture 9h-17h30)
+# Module 2 : Intraday
 now = datetime.now()
 market_open = (now.hour >= 9 and now.hour < 17) or (now.hour == 17 and now.minute <= 30)
 intraday_available = False
@@ -128,15 +132,12 @@ if market_open:
     intraday = load_intraday_data()
     if intraday is not None and not intraday.empty:
         intraday_available = True
-        # VWAP
         vwap = compute_vwap(intraday)
-        # Bandes de Bollinger (20 périodes sur 5 min)
         boll_lower, boll_mid, boll_upper = compute_bollinger(intraday, 20, 2)
-        # Prix limite idéal : VWAP - 0.05% (si VWAP disponible)
         if vwap is not None:
-            price_limit = vwap * 0.9995  # -0.05%
+            price_limit = vwap * 0.9995
         else:
-            price_limit = current_price * 0.999  # fallback léger
+            price_limit = current_price * 0.999
     else:
         intraday_available = False
 
@@ -151,7 +152,6 @@ col1.metric("Parts", f"{NB_PARTS}")
 col2.metric("PRM (poche)", f"{PRM:.4f} €")
 col3.metric("Dernier cours", f"{current_price:.4f} €")
 
-# Performance latente
 gain_pct = (current_price - PRM) / PRM * 100
 gain_eur = NB_PARTS * (current_price - PRM)
 st.markdown(f"**Gain latent :** {gain_eur:+,.2f} € ({gain_pct:+.2f} %)")
@@ -166,12 +166,10 @@ col4.metric("RSI (14)", f"{rsi_val:.1f}" if rsi_val is not None else "N/A")
 col5.metric("Plus haut 20j", f"{high_20:.4f} €")
 col6.metric("Drawdown", f"{drawdown_pct:+.2f} %")
 
-# Score visuel (barre de progression)
 score_pct = score / 10
 st.markdown(f"**Score de la journée : {score}/10**")
 st.progress(score_pct)
 
-# Conseil encadré
 st.markdown(f"""
 <div class="score-box" style="background-color: {'#d4edda' if 'bon jour' in conseil else '#fff3cd' if 'risque' in conseil.lower() else '#e9ecef'};">
     {conseil}
@@ -191,7 +189,6 @@ if market_open:
         if boll_lower and boll_upper:
             col8.metric("Boll. inf.", f"{boll_lower:.4f} €")
             col9.metric("Boll. sup.", f"{boll_upper:.4f} €")
-        # Prix limite idéal
         if price_limit:
             st.markdown(f"**Prix limite idéal suggéré : `{price_limit:.4f} €`** (VWAP -0.05%)")
         else:
@@ -201,7 +198,6 @@ if market_open:
 else:
     st.info("Marché fermé. Les données intraday seront disponibles pendant les heures d'ouverture (9h-17h30, Paris).")
 
-# Avertissement
 st.markdown("""
 <div class="warning-box">
 ⚠️ <strong>Attention :</strong> Les données Yahoo Finance peuvent avoir un délai de 15 minutes. Vérifiez le prix direct sur votre courtier avant d'exécuter l'ordre limite proposé.
