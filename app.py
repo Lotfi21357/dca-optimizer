@@ -12,7 +12,7 @@ st.set_page_config(
     page_title="DCA Optimizer DCAM",
     page_icon="🎯",
     layout="centered",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"  # Affiche la sidebar par défaut même sur mobile
 )
 
 st.markdown("""
@@ -28,14 +28,14 @@ TICKER = "DCAM.PA"
 NB_PARTS = 481
 PRM = 5.5937
 
-# ---------- SIDEBAR (NOUVEAU : curseur de décote) ----------
+# ---------- SIDEBAR (paramètres d'exécution avancée) ----------
 st.sidebar.header("⚙️ Exécution")
-decote_pct = st.sidebar.slider(
-    "Marge de décote (%)",
-    min_value=0.01, max_value=0.50, value=0.10, step=0.01,
-    help="Pourcentage en dessous du VWAP (ou du dernier cours) pour votre ordre limite."
+k_volatility = st.sidebar.slider(
+    "Coefficient volatilité (k)",
+    min_value=0.1, max_value=1.0, value=0.2, step=0.1,
+    help="Plus k est élevé, plus l'ordre est placé loin sous le VWAP (plus sûr mais moins probable d'être exécuté)."
 )
-st.sidebar.caption("Plus la décote est élevée, plus le prix est bas, mais l'exécution est moins certaine.")
+st.sidebar.caption("Le prix limite idéal est calculé à partir du VWAP, de l'ATR et des bandes de Bollinger.")
 
 # ---------- FONCTIONS DE CALCUL ----------
 def compute_rsi(series, period=14):
@@ -47,6 +47,12 @@ def compute_rsi(series, period=14):
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     return rsi.iloc[-1] if not rsi.empty else None
+
+def compute_atr(df, period=14):
+    high, low, close = df['High'], df['Low'], df['Close']
+    tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean()
+    return atr.iloc[-1] if not atr.empty else None
 
 def compute_bollinger(series, window=20, num_std=2):
     sma = series.rolling(window).mean()
@@ -118,7 +124,7 @@ elif rsi_val and rsi_val > 70:
 else:
     conseil = "ℹ️ Conditions neutres, vous pouvez investir sans urgence"
 
-# ---------- INTRAJOUR ----------
+# ---------- INTRAJOUR (calcul technique avancé) ----------
 tz_paris = ZoneInfo("Europe/Paris")
 now = datetime.now(tz_paris)
 market_open = (now.hour >= 9 and now.hour < 17) or (now.hour == 17 and now.minute <= 30)
@@ -127,17 +133,22 @@ if market_open:
     intraday = load_intraday_data()
     if intraday is not None and not intraday.empty:
         vwap = compute_vwap(intraday)
-        # Choisir une fenêtre adaptée aux données disponibles
         n_points = len(intraday)
         window = 20 if n_points >= 20 else (10 if n_points >= 10 else n_points)
         if window >= 2:
             boll_lower, _, boll_upper = compute_bollinger(intraday['Close'], window, 2)
-        # Prix limite basé sur VWAP avec la décote choisie
-        if vwap:
-            price_limit = vwap * (1 - decote_pct / 100)
+        atr_val = compute_atr(daily, 14)  # ATR journalier pour la volatilité
+
+        if vwap and atr_val:
+            # Prix limite basé sur le modèle trader : VWAP - max(k*ATR, VWAP - boll_lower)
+            discount_atr = k_volatility * atr_val
+            discount_boll = vwap - boll_lower if boll_lower and not np.isnan(boll_lower) else 0
+            price_limit = vwap - max(discount_atr, discount_boll)
+        elif vwap:
+            # Fallback simple si ATR indisponible
+            price_limit = vwap * 0.9995
         else:
-            # Si pas de VWAP, utiliser le dernier cours avec une décote légèrement plus forte
-            price_limit = current_price * (1 - (decote_pct + 0.02) / 100)
+            price_limit = current_price * 0.9995
 
 # ---------- INTERFACE ----------
 st.title("🎯 DCAM DCA Optimizer")
@@ -193,7 +204,8 @@ if market_open:
         else:
             c9.metric("Boll. sup.", "N/A")
         if price_limit:
-            st.markdown(f"**Prix limite idéal : `{price_limit:.4f} €`** (VWAP -{decote_pct:.2f}%)")
+            st.markdown(f"**Prix limite idéal (modèle trader) : `{price_limit:.4f} €`**")
+            st.caption("Basé sur VWAP, volatilité (ATR) et bande de Bollinger inférieure.")
     else:
         st.warning("Les données intraday ne sont pas encore disponibles (peut prendre quelques minutes après l'ouverture).")
 else:
