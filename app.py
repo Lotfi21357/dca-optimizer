@@ -34,16 +34,60 @@ if st.sidebar.button("🔄 Rafraîchir les données"):
     st.cache_data.clear()
     st.rerun()
 
-st.sidebar.caption("Actualisez manuellement ou attendez le prochain chargement (cache 2 min).")
+st.sidebar.caption("Données actualisées en cache pendant 2 min.")
 
-# ---------- FONCTIONS DE CALCUL ----------
-def get_data(ticker, period="3mo", interval="1d"):
+# ---------- FONCTIONS DE TÉLÉCHARGEMENT ROBUSTE ----------
+@st.cache_data(ttl=120, show_spinner="Chargement...")
+def fetch_data(ticker, period="3mo", interval="1d"):
+    """Essaie plusieurs méthodes pour obtenir les données."""
+    # Méthode 1 : download standard
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False)
-        return df if not df.empty else pd.DataFrame()
+        if not df.empty:
+            return df
     except:
-        return pd.DataFrame()
+        pass
+    # Méthode 2 : utiliser l'objet Ticker
+    try:
+        t = yf.Ticker(ticker)
+        df = t.history(period=period, interval=interval)
+        if not df.empty:
+            return df
+    except:
+        pass
+    # Méthode 3 : période exacte avec dates
+    try:
+        end = datetime.now()
+        start = end - timedelta(days=100)
+        df = yf.download(ticker, start=start, end=end, interval=interval, progress=False)
+        if not df.empty:
+            return df
+    except:
+        pass
+    return pd.DataFrame()
 
+# ---------- CHARGEMENT ----------
+daily = fetch_data("DCAM.PA", "3mo")
+if daily.empty:
+    st.error("❌ Données DCAM.PA temporairement indisponibles (Yahoo Finance).")
+    st.info("💡 Appuyez sur **🔄 Rafraîchir les données** dans la barre latérale pour réessayer.")
+    st.stop()
+
+daily.ffill(inplace=True)
+current = daily['Close'].iloc[-1]
+open_p = daily['Open'].iloc[-1] if 'Open' in daily.columns else None
+prev_c = daily['Close'].iloc[-2] if len(daily) > 1 else None
+
+# Intraday (5 min) si marché ouvert
+now = datetime.now()
+market_open = 9 <= now.hour < 17 or (now.hour == 17 and now.minute <= 30)
+intraday = pd.DataFrame()
+if market_open:
+    intraday = fetch_data("DCAM.PA", "1d", "5m")
+    if not intraday.empty:
+        intraday.ffill(inplace=True)
+
+# ---------- INDICATEURS MANUELS ----------
 def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -60,42 +104,19 @@ def atr(df, period=14):
 
 def vwap(df):
     typical = (df['High'] + df['Low'] + df['Close']) / 3
-    vwap = (typical * df['Volume']).cumsum() / df['Volume'].cumsum()
-    return vwap.iloc[-1]
+    return (typical * df['Volume']).cumsum() / df['Volume'].cumsum()
 
-def bollinger_bands(series, window=20, std=2):
+def bb(series, window=20, std=2):
     sma = series.rolling(window).mean()
     stdv = series.rolling(window).std()
     return sma.iloc[-1] - stdv.iloc[-1]*std, sma.iloc[-1], sma.iloc[-1] + stdv.iloc[-1]*std
 
-# ---------- DONNÉES ----------
-now = datetime.now()
-daily = get_data("DCAM.PA", "3mo")
-if daily.empty:
-    st.error("Données indisponibles. Réessayez plus tard.")
-    st.stop()
-daily.ffill(inplace=True)
-
-current = daily['Close'].iloc[-1]
-open_p = daily['Open'].iloc[-1] if 'Open' in daily.columns else None
-prev_c = daily['Close'].iloc[-2] if len(daily) > 1 else None
-
-# Intraday (5 min)
-intraday = pd.DataFrame()
-market_open = 9 <= now.hour < 17 or (now.hour == 17 and now.minute <= 30)
-if market_open:
-    intraday = get_data("DCAM.PA", "1d", "5m")
-    if not intraday.empty:
-        intraday.ffill(inplace=True)
-
-# ---------- INDICATEURS ----------
 rsi_val = rsi(daily['Close'], 14).iloc[-1] if len(daily) > 14 else None
 high20 = daily['High'].rolling(20).max().iloc[-1]
 drawdown = (current - high20) / high20 * 100
 atr_val = atr(daily, 14).iloc[-1] if len(daily) > 14 else None
 vol_pct = (atr_val / current * 100) if atr_val else 0
 
-# Score
 score = 5
 if rsi_val:
     if rsi_val < 30: score += 4
@@ -108,9 +129,9 @@ if vol_pct > 2.0: score -= 2
 score = max(0, min(10, score))
 
 # Sentinelles US
-es = get_data("ES=F", "1d", "5m")
-nq = get_data("NQ=F", "1d", "5m")
-es_var = nq_var = 0
+es = fetch_data("ES=F", "1d", "5m")
+nq = fetch_data("NQ=F", "1d", "5m")
+es_var = nq_var = 0.0
 if not es.empty and not nq.empty:
     es_var = (es['Close'].iloc[-1] / es['Close'].iloc[-2] - 1) * 100 if len(es)>1 else 0
     nq_var = (nq['Close'].iloc[-1] / nq['Close'].iloc[-2] - 1) * 100 if len(nq)>1 else 0
@@ -126,9 +147,9 @@ if open_p and prev_c:
 vwap_val = None
 boll_low = boll_up = None
 if not intraday.empty:
-    vwap_val = vwap(intraday)
+    vwap_val = vwap(intraday).iloc[-1]
     if len(intraday) >= 20:
-        boll_low, _, boll_up = bollinger_bands(intraday['Close'], 20, 2)
+        boll_low, _, boll_up = bb(intraday['Close'], 20, 2)
 
 price_lim = vwap_val * 0.9995 if vwap_val else current * 0.999
 
@@ -142,23 +163,19 @@ else:
     nb_parts = cout = 0
     new_prm = prm_ajuste
 
-# Bannière
+# Décision
 if us_alert:
-    decision = "PRUDENCE MACRO"
-    color = "red"
+    decision, color = "PRUDENCE MACRO", "red"
 elif score >= 7:
-    decision = "ACHAT FAVORABLE"
-    color = "green"
+    decision, color = "ACHAT FAVORABLE", "green"
 elif score >= 4:
-    decision = "ATTENDRE"
-    color = "orange"
+    decision, color = "ATTENDRE", "orange"
 else:
-    decision = "PRUDENCE MACRO"
-    color = "red"
+    decision, color = "PRUDENCE MACRO", "red"
 
-# ---------- AFFICHAGE ----------
-st.title("🎯 DCA Optimizer DCAM")
-st.caption(f"Analyse du {now.strftime('%d/%m/%Y à %H:%M')} (données différées)")
+# ---------- INTERFACE ----------
+st.title("🎯 DCAM DCA Optimizer")
+st.caption(f"Analyse du {now.strftime('%d/%m/%Y à %H:%M')}")
 
 st.markdown(f"<div class='decision-banner' style='background-color:{color};color:white;'>{decision}</div>", unsafe_allow_html=True)
 
@@ -201,9 +218,9 @@ if market_open and not intraday.empty:
     c5.markdown(f"<div class='big-price'>{price_lim:.4f}€</div>", unsafe_allow_html=True)
     c5.caption("Prix limite idéal (VWAP -0.05%)")
 elif market_open:
-    st.info("Données intraday en attente...")
+    st.info("Données intraday en attente... Réessayez dans quelques minutes.")
 else:
-    st.info("Marché fermé.")
+    st.info("Marché fermé (9h-17h30 Paris).")
 
 st.subheader("🧮 Calculateur de parts")
 ca,cb,cc = st.columns(3)
