@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -54,11 +55,9 @@ def compute_vwap(df):
 @st.cache_data(ttl=120, show_spinner="Chargement des données journalières...")
 def load_daily_data():
     try:
-        # Utiliser l'objet Ticker pour plus de contrôle
         ticker = yf.Ticker(TICKER)
         df = ticker.history(period="3mo")
         if df.empty:
-            # Essayer avec download comme fallback
             df = yf.download(TICKER, period="3mo", progress=False)
         return df if not df.empty else None
     except Exception as e:
@@ -79,8 +78,8 @@ def load_intraday_data():
 # ---------- INITIALISATION ----------
 daily = load_daily_data()
 if daily is None:
-    st.error("⚠️ Impossible de récupérer les données journalières pour DCAM.PA. Cela peut arriver temporairement. Veuillez réessayer dans quelques minutes.")
-    st.info("💡 **Actions :** vous pouvez cliquer sur le bouton ci-dessous pour vider le cache et re-tenter, ou vérifier votre connexion internet.")
+    st.error("⚠️ Impossible de récupérer les données journalières pour DCAM.PA.")
+    st.info("💡 Cliquez sur le bouton ci-dessous pour réessayer.")
     if st.button("🔄 Forcer le rechargement des données"):
         st.cache_data.clear()
         st.rerun()
@@ -110,8 +109,9 @@ elif rsi_val and rsi_val > 70:
 else:
     conseil = "ℹ️ Conditions neutres, vous pouvez investir sans urgence"
 
-# ---------- INTRAJOUR ----------
-now = datetime.now()
+# ---------- INTRAJOUR (correction fuseau horaire Paris) ----------
+tz_paris = ZoneInfo("Europe/Paris")
+now = datetime.now(tz_paris)
 market_open = (now.hour >= 9 and now.hour < 17) or (now.hour == 17 and now.minute <= 30)
 vwap = boll_lower = boll_upper = price_limit = None
 if market_open:
@@ -123,9 +123,8 @@ if market_open:
 
 # ---------- INTERFACE ----------
 st.title("🎯 DCAM DCA Optimizer")
-st.caption(f"Données du {now.strftime('%d/%m/%Y %H:%M')}")
+st.caption(f"Données du {now.strftime('%d/%m/%Y %H:%M')} (heure de Paris)")
 
-# Bouton de rafraîchissement
 col_refresh, _ = st.columns([1, 4])
 with col_refresh:
     if st.button("🔄 Rafraîchir"):
