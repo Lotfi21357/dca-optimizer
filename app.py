@@ -28,6 +28,15 @@ TICKER = "DCAM.PA"
 NB_PARTS = 481
 PRM = 5.5937
 
+# ---------- SIDEBAR (NOUVEAU : curseur de décote) ----------
+st.sidebar.header("⚙️ Exécution")
+decote_pct = st.sidebar.slider(
+    "Marge de décote (%)",
+    min_value=0.01, max_value=0.50, value=0.10, step=0.01,
+    help="Pourcentage en dessous du VWAP (ou du dernier cours) pour votre ordre limite."
+)
+st.sidebar.caption("Plus la décote est élevée, plus le prix est bas, mais l'exécution est moins certaine.")
+
 # ---------- FONCTIONS DE CALCUL ----------
 def compute_rsi(series, period=14):
     delta = series.diff()
@@ -123,7 +132,12 @@ if market_open:
         window = 20 if n_points >= 20 else (10 if n_points >= 10 else n_points)
         if window >= 2:
             boll_lower, _, boll_upper = compute_bollinger(intraday['Close'], window, 2)
-        price_limit = vwap * 0.9995 if vwap else current_price * 0.999
+        # Prix limite basé sur VWAP avec la décote choisie
+        if vwap:
+            price_limit = vwap * (1 - decote_pct / 100)
+        else:
+            # Si pas de VWAP, utiliser le dernier cours avec une décote légèrement plus forte
+            price_limit = current_price * (1 - (decote_pct + 0.02) / 100)
 
 # ---------- INTERFACE ----------
 st.title("🎯 DCAM DCA Optimizer")
@@ -179,7 +193,7 @@ if market_open:
         else:
             c9.metric("Boll. sup.", "N/A")
         if price_limit:
-            st.markdown(f"**Prix limite idéal : `{price_limit:.4f} €`** (VWAP -0.05%)")
+            st.markdown(f"**Prix limite idéal : `{price_limit:.4f} €`** (VWAP -{decote_pct:.2f}%)")
     else:
         st.warning("Les données intraday ne sont pas encore disponibles (peut prendre quelques minutes après l'ouverture).")
 else:
