@@ -27,7 +27,7 @@ TICKER = "DCAM.PA"
 NB_PARTS = 481
 PRM = 5.5937
 
-# ---------- FONCTIONS DE CALCUL (sans pandas_ta) ----------
+# ---------- FONCTIONS DE CALCUL ----------
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -50,21 +50,40 @@ def compute_vwap(df):
     vwap = (typical * df['Volume']).cumsum() / df['Volume'].cumsum()
     return vwap.iloc[-1] if not vwap.empty else None
 
-# ---------- CHARGEMENT DES DONNÉES ----------
-@st.cache_data(ttl=120, show_spinner=False)
+# ---------- CHARGEMENT DES DONNÉES (robuste) ----------
+@st.cache_data(ttl=120, show_spinner="Chargement des données journalières...")
 def load_daily_data():
-    start = datetime.now() - timedelta(days=120)
-    df = yf.download(TICKER, start=start, progress=False)
-    return df if not df.empty else None
+    try:
+        # Utiliser l'objet Ticker pour plus de contrôle
+        ticker = yf.Ticker(TICKER)
+        df = ticker.history(period="3mo")
+        if df.empty:
+            # Essayer avec download comme fallback
+            df = yf.download(TICKER, period="3mo", progress=False)
+        return df if not df.empty else None
+    except Exception as e:
+        st.error(f"Erreur lors du téléchargement : {e}")
+        return None
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner="Chargement des données intraday...")
 def load_intraday_data():
-    df = yf.download(TICKER, period="1d", interval="5m", progress=False)
-    return df if not df.empty else None
+    try:
+        ticker = yf.Ticker(TICKER)
+        df = ticker.history(period="1d", interval="5m")
+        if df.empty:
+            df = yf.download(TICKER, period="1d", interval="5m", progress=False)
+        return df if not df.empty else None
+    except Exception:
+        return None
 
+# ---------- INITIALISATION ----------
 daily = load_daily_data()
 if daily is None:
-    st.error("Données journalières indisponibles.")
+    st.error("⚠️ Impossible de récupérer les données journalières pour DCAM.PA. Cela peut arriver temporairement. Veuillez réessayer dans quelques minutes.")
+    st.info("💡 **Actions :** vous pouvez cliquer sur le bouton ci-dessous pour vider le cache et re-tenter, ou vérifier votre connexion internet.")
+    if st.button("🔄 Forcer le rechargement des données"):
+        st.cache_data.clear()
+        st.rerun()
     st.stop()
 
 current_price = daily['Close'].iloc[-1]
@@ -74,7 +93,6 @@ rsi_val = compute_rsi(daily['Close'], 14)
 high_20 = daily['High'].rolling(20).max().iloc[-1]
 drawdown_pct = (current_price - high_20) / high_20 * 100
 
-# Score simple
 score = 5
 if rsi_val is not None:
     if rsi_val < 30: score += 4
@@ -107,10 +125,12 @@ if market_open:
 st.title("🎯 DCAM DCA Optimizer")
 st.caption(f"Données du {now.strftime('%d/%m/%Y %H:%M')}")
 
-# Bouton de rafraîchissement manuel (évite l'auto‑refresh problématique)
-if st.button("🔄 Rafraîchir les données"):
-    st.cache_data.clear()
-    st.rerun()
+# Bouton de rafraîchissement
+col_refresh, _ = st.columns([1, 4])
+with col_refresh:
+    if st.button("🔄 Rafraîchir"):
+        st.cache_data.clear()
+        st.rerun()
 
 st.subheader("📌 Ma position PEA")
 c1,c2,c3 = st.columns(3)
@@ -124,7 +144,7 @@ st.markdown(f"**Gain latent :** {gain_eur:+,.2f} € ({gain_pct:+.2f} %)")
 
 st.markdown("---")
 
-st.subheader("📊 Analyse journalière (faut‑il acheter aujourd'hui ?)")
+st.subheader("📊 Analyse journalière")
 c4,c5,c6 = st.columns(3)
 c4.metric("RSI (14)", f"{rsi_val:.1f}" if rsi_val else "N/A")
 c5.metric("+ Haut 20j", f"{high_20:.4f} €")
@@ -153,7 +173,7 @@ if market_open:
         if price_limit:
             st.markdown(f"**Prix limite idéal : `{price_limit:.4f} €`** (VWAP -0.05%)")
     else:
-        st.warning("Données intraday pas encore chargées. Réessayez dans quelques minutes.")
+        st.warning("Les données intraday ne sont pas encore disponibles (peut prendre quelques minutes après l'ouverture).")
 else:
     st.info("Marché fermé (horaire Paris : 9h00 - 17h30).")
 
@@ -164,4 +184,4 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown("---")
-st.caption("DCA Optimizer · Outil personnel d’aide à la décision")
+st.caption("DCA Optimizer · Outil personnel d'aide à la décision")
