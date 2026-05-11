@@ -2,5 +2,3 @@ streamlit>=1.24
 yfinance>=0.2.18
 pandas>=1.5
 numpy>=1.24
-pandas_ta>=0.3.14b0
-streamlit-autorefresh>=1.0.1
